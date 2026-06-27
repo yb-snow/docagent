@@ -135,6 +135,7 @@ def render() -> None:
             )
             for doc in recent:
                 final  = json.loads(doc.get("final_data") or "{}")
+                fields = final.get("fields", final)   # support both nested and flat
                 status = doc.get("validation_status", "unknown")
                 conf   = doc.get("extraction_confidence", 0.0)
                 b      = badge(
@@ -144,12 +145,13 @@ def render() -> None:
                 )
                 fname  = (doc.get("source_path") or "").split("/")[-1] or doc["document_id"][:12]
                 vendor = (
-                    final.get("vendor_name") or final.get("vendor") or
-                    final.get("supplier_name") or "—"
+                    fields.get("vendor_name") or fields.get("vendor") or
+                    fields.get("supplier_name") or fields.get("merchant") or "—"
                 )
                 total_amt = (
-                    final.get("total_amount") or final.get("total") or
-                    final.get("amount_due") or final.get("grand_total")
+                    fields.get("total_amount") or fields.get("total") or
+                    fields.get("amount_due") or fields.get("grand_total") or
+                    fields.get("invoice_total") or fields.get("amount_payable")
                 )
                 try:
                     total_str = f"${float(str(total_amt).replace(',','').replace('$','').strip()):,.2f}"

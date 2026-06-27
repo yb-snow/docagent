@@ -179,33 +179,45 @@ def get_stats() -> dict:
             "SELECT doc_type, COUNT(*) as cnt FROM invoice_records GROUP BY doc_type"
         ).fetchall()
 
-        avg_latency_row = conn.execute(
-            "SELECT AVG(processing_time_s) FROM invoice_records WHERE processing_time_s IS NOT NULL"
-        ).fetchone()
-        avg_latency = avg_latency_row[0] if avg_latency_row and avg_latency_row[0] else None
-
         final_data_rows = conn.execute(
             "SELECT final_data FROM invoice_records WHERE final_data IS NOT NULL AND final_data != '{}'"
         ).fetchall()
 
-    amounts = []
+    amounts  = []
+    latencies = []
     for row in final_data_rows:
         try:
-            data = json.loads(row[0] or "{}")
+            data   = json.loads(row[0] or "{}")
+            fields = data.get("fields", {})
+
+            # Latency — stored in final_data["timings"]["total"] by the pipeline
+            timings = data.get("timings", {})
+            if isinstance(timings, dict) and timings.get("total"):
+                latencies.append(float(timings["total"]))
+
+            # Cost — total_amount lives inside data["fields"]
             amt_raw = (
-                data.get("total_amount")
-                or data.get("total")
-                or data.get("amount_due")
-                or data.get("grand_total")
+                fields.get("total_amount")
+                or fields.get("total")
+                or fields.get("amount_due")
+                or fields.get("grand_total")
+                or fields.get("invoice_total")
+                or fields.get("amount_payable")
             )
             if amt_raw is not None:
-                amt = float(str(amt_raw).replace(",", "").replace("$", "").replace("€", "").replace("£", "").strip())
-                amounts.append(amt)
+                amt = float(
+                    str(amt_raw)
+                    .replace(",", "").replace("$", "").replace("€", "")
+                    .replace("£", "").replace("₹", "").strip()
+                )
+                if amt > 0:
+                    amounts.append(amt)
         except Exception:
             pass
 
-    total_cost = sum(amounts) if amounts else None
-    avg_cost   = (total_cost / len(amounts)) if amounts else None
+    total_cost  = sum(amounts)    if amounts   else None
+    avg_cost    = total_cost / len(amounts)    if amounts   else None
+    avg_latency = sum(latencies) / len(latencies) if latencies else None
 
     return {
         "total":        total,
@@ -213,8 +225,8 @@ def get_stats() -> dict:
         "pending":      pending,
         "today":        today,
         "by_type":      {r["doc_type"]: r["cnt"] for r in by_type},
-        "avg_latency_s":       avg_latency,
-        "total_cost":          total_cost,
+        "avg_latency_s":        avg_latency,
+        "total_cost":           total_cost,
         "avg_cost_per_invoice": avg_cost,
     }
 
