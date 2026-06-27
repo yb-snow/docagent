@@ -1,0 +1,43 @@
+# ── Core orchestration ────────────────────────────────────────────────────────
+langgraph>=0.2.0
+langchain-core>=0.3.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+streamlit>=1.35.0
+pandas>=2.0.0
+
+# ── Document ingestion ────────────────────────────────────────────────────────
+pdf2image>=1.16.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+
+# ── VLM: Google Gemini (FREE — recommended) ───────────────────────────────────
+# Get your free API key at https://aistudio.google.com/app/apikey
+# No credit card required — just a Google account
+google-genai>=1.0.0
+
+# ── VLM: Anthropic Claude (optional — paid API key required) ──────────────────
+anthropic>=0.40.0
+
+# ── Image preprocessing ───────────────────────────────────────────────────────
+opencv-python-headless>=4.8.0
+
+# ── Semantic vendor matching ──────────────────────────────────────────────────
+rapidfuzz>=3.6.0
+chromadb>=0.5.0
+
+# ── Local VLM — Apple Silicon (mlx-vlm, no API key, no GPU required) ─────────
+# Run: pip install mlx-vlm
+mlx-vlm
+
+# ── Local VLM — moondream2 (tiny ~2 GB, works on any hardware) ───────────────
+# Already covered by transformers below
+einops
+
+# ── Local VLM — HuggingFace models (InternVL2 / LLaVA / moondream2) ─────────
+# Uncomment if using local transformer-based models:
+# torch>=2.1.0
+# transformers>=4.40.0
+# accelerate>=0.28.0
