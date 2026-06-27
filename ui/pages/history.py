@@ -124,7 +124,7 @@ def render() -> None:
         on_select="rerun",
         selection_mode="single-row",
         column_config={
-            "Total":  st.column_config.NumberColumn("Total", format="$%.2f"),
+            "Total":  st.column_config.NumberColumn("Total", format="₹%.2f"),
             "Status": st.column_config.TextColumn("Status"),
         },
     )

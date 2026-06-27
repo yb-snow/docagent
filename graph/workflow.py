@@ -9,7 +9,7 @@ from typing import Optional, TypedDict
 from langgraph.graph import END, StateGraph
 from PIL import Image
 
-from agents import correction_agent, extraction_agent, validation_agent
+from agents import correction_agent, extraction_agent, fx_agent, validation_agent
 import config   # read at call-time so Settings changes take effect immediately
 from database import storage
 from models.schemas import ExtractionResult, ProcessingRecord, ValidationResult, ValidationStatus
@@ -30,6 +30,8 @@ class InvoiceState(TypedDict):
     processing_notes:     list
     timings:              dict      # {node_name: seconds}
     pipeline_start:       float    # epoch time when pipeline started
+    fx_converted:         bool     # True if amounts were converted to INR
+    fx_review_required:   bool     # True if non-INR but FX fetch failed
 
 
 # ── Timing helper ─────────────────────────────────────────────────────────────
@@ -102,6 +104,29 @@ def node_ocr_fallback(state: InvoiceState) -> InvoiceState:
     )
     storage.log_event(state["document_id"], "ocr_fallback",
                       {"chars": len(combined), "latency_s": elapsed})
+    return state
+
+
+def node_fx_convert(state: InvoiceState) -> InvoiceState:
+    """Detect currency; if non-INR fetch live rate and convert all monetary fields to INR."""
+    t0  = time.time()
+    ext = state["extraction"]
+    if not ext:
+        return state
+
+    updated_ext, converted, rate, note = fx_agent.run(ext)
+    state["extraction"]        = updated_ext
+    state["fx_converted"]      = converted
+    state["fx_review_required"] = (not converted and "FX rate fetch failed" in note)
+
+    elapsed = _timed(state, "fx_convert", t0)
+    state["processing_notes"].append(f"💱 {note} · ⏱ {elapsed}s")
+    storage.log_event(state["document_id"], "fx_convert", {
+        "converted":  converted,
+        "rate":       rate,
+        "note":       note,
+        "latency_s":  elapsed,
+    })
     return state
 
 
@@ -205,10 +230,14 @@ def node_review_queue(state: InvoiceState) -> InvoiceState:
 
 def _should_run_ocr(state: InvoiceState) -> str:
     conf = state["extraction"].confidence if state["extraction"] else 0.0
-    return "ocr_fallback" if conf < config.EXTRACTION_CONF_THRESHOLD else "validate"
+    return "ocr_fallback" if conf < config.EXTRACTION_CONF_THRESHOLD else "fx_convert"
 
 
 def _route_after_validation(state: InvoiceState) -> str:
+    # Non-INR invoice where FX fetch failed → always needs human review
+    if state.get("fx_review_required"):
+        return "review_queue"
+
     v    = state["validation"]
     conf = state["extraction"].confidence if state["extraction"] else 0.0
 
@@ -229,6 +258,7 @@ def build_graph():
     g.add_node("ingest",       node_ingest)
     g.add_node("extract",      node_extract)
     g.add_node("ocr_fallback", node_ocr_fallback)
+    g.add_node("fx_convert",   node_fx_convert)
     g.add_node("validate",     node_validate)
     g.add_node("correct",      node_correct)
     g.add_node("store",        node_store)
@@ -237,8 +267,9 @@ def build_graph():
     g.set_entry_point("ingest")
     g.add_edge("ingest", "extract")
     g.add_conditional_edges("extract", _should_run_ocr,
-                             {"ocr_fallback": "ocr_fallback", "validate": "validate"})
-    g.add_edge("ocr_fallback", "validate")
+                             {"ocr_fallback": "ocr_fallback", "fx_convert": "fx_convert"})
+    g.add_edge("ocr_fallback", "fx_convert")
+    g.add_edge("fx_convert",   "validate")
     g.add_conditional_edges("validate", _route_after_validation,
                              {"correct": "correct", "store": "store",
                               "review_queue": "review_queue"})
@@ -262,6 +293,8 @@ def _initial_state(path: str) -> InvoiceState:
         "processing_notes":    [],
         "timings":             {},
         "pipeline_start":      time.time(),
+        "fx_converted":        False,
+        "fx_review_required":  False,
     }
 
 

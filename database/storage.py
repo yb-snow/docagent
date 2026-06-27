@@ -208,7 +208,7 @@ def get_stats() -> dict:
                 amt = float(
                     str(amt_raw)
                     .replace(",", "").replace("$", "").replace("€", "")
-                    .replace("£", "").replace("₹", "").strip()
+                    .replace("£", "").replace("₹", "").replace("RS", "").strip()
                 )
                 if amt > 0:
                     amounts.append(amt)

@@ -154,7 +154,7 @@ def render() -> None:
                     fields.get("invoice_total") or fields.get("amount_payable")
                 )
                 try:
-                    total_str = f"${float(str(total_amt).replace(',','').replace('$','').strip()):,.2f}"
+                    total_str = f"₹{float(str(total_amt).replace(',','').replace('$','').replace('₹','').strip()):,.2f}"
                 except Exception:
                     total_str = "—"
 
