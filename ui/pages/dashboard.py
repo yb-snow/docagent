@@ -48,24 +48,63 @@ def _section(label: str) -> None:
     st.markdown(f'<div class="section-header">{label}</div>', unsafe_allow_html=True)
 
 
+def _check_pipeline_health() -> list[tuple[str, bool, str]]:
+    """Live health checks for each pipeline stage — replaces a previously
+    hardcoded 'everything is OK' display with checks that can actually fail."""
+    import shutil
+    import config
+    from pipeline.ingestion import _find_poppler_path
+    from pipeline.ocr import _TESSERACT_AVAILABLE
+
+    checks: list[tuple[str, bool, str]] = []
+
+    poppler_ok = _find_poppler_path() is not None or shutil.which("pdftoppm") is not None
+    checks.append((
+        "Ingestion", poppler_ok,
+        "Poppler found" if poppler_ok else "Poppler not found — PDF ingestion will fail",
+    ))
+
+    backend = config.VLM_BACKEND
+    if backend == "gemini":
+        vlm_ok  = bool(config.GEMINI_API_KEY)
+        vlm_msg = "Gemini configured" if vlm_ok else "No Gemini API key set (see Settings)"
+    elif backend == "claude":
+        vlm_ok  = bool(config.ANTHROPIC_API_KEY)
+        vlm_msg = "Claude configured" if vlm_ok else "No Anthropic API key set (see Settings)"
+    else:
+        vlm_ok, vlm_msg = True, f"{backend} — local, no API key required"
+    checks.append(("Extraction (VLM)", vlm_ok, vlm_msg))
+
+    checks.append((
+        "OCR Fallback", _TESSERACT_AVAILABLE,
+        "Tesseract available" if _TESSERACT_AVAILABLE else "Tesseract not found",
+    ))
+    checks.append(("Validation", True, "Rule-based — always available, no external dependency"))
+    checks.append(("Correction", vlm_ok, vlm_msg))
+
+    try:
+        from database.storage import _get_conn
+        with _get_conn() as conn:
+            conn.execute("SELECT 1")
+        checks.append(("Storage", True, "SQLite reachable"))
+    except Exception as e:
+        checks.append(("Storage", False, f"SQLite error: {e}"))
+
+    return checks
+
+
 def _pipeline_stages() -> None:
-    stages = [
-        ("Ingestion",       "✅"),
-        ("Classification",  "✅"),
-        ("OCR / VLM",       "✅"),
-        ("Extraction",      "✅"),
-        ("Validation",      "✅"),
-        ("Correction",      "✅"),
-        ("Storage",         "✅"),
-    ]
-    for name, icon in stages:
+    for name, ok, msg in _check_pipeline_health():
         col_a, col_b = st.columns([3, 1])
         with col_a:
             st.markdown(f"<span style='font-size:.88rem;font-weight:500'>{name}</span>",
                         unsafe_allow_html=True)
         with col_b:
-            st.markdown(f"<span style='font-size:.82rem;color:#16a34a;font-weight:600'>{icon} OK</span>",
+            icon, color, label = ("✅", "#16a34a", "OK") if ok else ("⚠️", "#dc2626", "Issue")
+            st.markdown(f"<span style='font-size:.82rem;color:{color};font-weight:600'>{icon} {label}</span>",
                         unsafe_allow_html=True)
+        if not ok:
+            st.caption(f"⚠️ {msg}")
         st.markdown("<div style='height:1px;background:#f0f4f8;margin:4px 0'></div>",
                     unsafe_allow_html=True)
 

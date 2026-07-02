@@ -76,8 +76,30 @@ def render() -> None:
 
             left, right = st.columns([2, 1])
 
-            # ── Left: editable field panel ────────────────────────────────────
+            # ── Left: source image + editable field panel ─────────────────────
             with left:
+                source_path = doc.get("source_path") or ""
+                preview_img = None
+                if source_path:
+                    try:
+                        from pipeline.ingestion import get_preview_image
+                        preview_img = get_preview_image(source_path)
+                    except Exception:
+                        preview_img = None
+
+                if preview_img is not None:
+                    st.markdown("**Source Document**")
+                    st.image(preview_img, use_container_width=True)
+                    st.markdown(
+                        "<hr style='margin:6px 0;border-color:#e2e8f0'/>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption(
+                        "📎 Original file not available for preview "
+                        "(processed before image persistence was added, or file was moved)."
+                    )
+
                 st.markdown("**Review & Edit Extracted Fields**")
                 st.caption("All fields are pre-populated from the AI extraction. "
                            "Correct any errors before approving.")
@@ -125,6 +147,12 @@ def render() -> None:
                     f"font-weight:700'>{conf*100:.0f}%</span>",
                     unsafe_allow_html=True,
                 )
+                cb = final.get("confidence_breakdown")
+                if cb and cb.get("vlm_confidence") is not None:
+                    st.caption(
+                        f"🧮 {cb['vlm_confidence']*100:.0f}% VLM self-report × 0.7 "
+                        f"+ {cb['field_coverage_score']*100:.0f}% field coverage × 0.3"
+                    )
                 st.markdown(f"- **Reason flagged:** {reason}")
 
                 st.markdown("**Processing log:**")

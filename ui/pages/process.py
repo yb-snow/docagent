@@ -5,8 +5,7 @@ from __future__ import annotations
 import os
 import json
 import sys
-import tempfile
-import uuid # Added for generating document_id on pipeline failure
+import uuid
 from pathlib import Path
 
 import streamlit as st
@@ -16,6 +15,11 @@ from ui.components import pipeline_status
 from ui.components.field_groups import format_value, group_fields, pretty_label
 
 sys.path.insert(0, os.getcwd())
+
+# Concurrent batch processing — Gemini free tier allows 30 req/min; capping
+# workers well below that keeps typical demo-sized batches (< 10 files) safe
+# without needing a dedicated rate-limiter.
+_BATCH_MAX_WORKERS = 3
 
 _DOC_TYPE_ICONS = {
     "invoice":        "🧾",
@@ -33,58 +37,24 @@ _DOC_TYPE_ICONS = {
 }
 
 
-def _run_pipeline(uploaded_file, placeholder) -> dict:
-    
-    """Run the real LangGraph pipeline and update the stepper after EACH node completes."""
-    
-    from graph.workflow import process_document_stream
-    from ui.components.pipeline_status import render_progress
-
-    # Save upload to a temp file
+def _save_upload(uploaded_file) -> tuple[str, str]:
+    """Persist an uploaded file permanently under data/uploads/ and return
+    (document_id, path). Documents used to be written to a tempfile and
+    deleted right after processing — meaning a human reviewer could never
+    actually see the source image. Keeping it lets Review Queue and History
+    show it."""
+    doc_id = str(uuid.uuid4())
     suffix = Path(uploaded_file.name).suffix or ".bin"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = tmp.name
+    upload_dir = Path("data/uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    path = upload_dir / f"{doc_id}{suffix}"
+    path.write_bytes(uploaded_file.getvalue())
+    return doc_id, str(path)
 
-    completed_nodes: set = set()
-    final_state           = None
-    skipped_nodes:  set = set()
 
-    # Node display labels for the status caption
-    _labels = {
-        "ingest":       "📥 Ingesting document…",
-        "extract":      "🔍 Classifying and extracting fields with AI…",
-        "ocr_fallback": "📄 Running OCR fallback (low confidence detected)…",
-        "validate":     "✅ Validating extracted data…",
-        "correct":      "🔄 Auto-correcting failed fields…",
-        "store":        "💾 Saving to database…",
-        "review_queue": "👁️ Routing to human review queue…",
-    }
-
-    try:
-        for node_name, state in process_document_stream(tmp_path):
-            # Mark this node as done
-            completed_nodes.add(node_name)
-            final_state = state
-
-            # Detect skipped OCR (if we jump straight from extract to validate)
-            if node_name == "validate" and "ocr_fallback" not in completed_nodes:
-                skipped_nodes.add("ocr_fallback")
-
-            # Render the stepper with REAL progress
-            with placeholder.container():
-                render_progress(completed_nodes, skipped_nodes=skipped_nodes)
-                label = _labels.get(node_name, f"Running {node_name}…")
-                notes = state.get("processing_notes") or []
-                last_note = notes[-1] if notes else ""
-                st.caption(f"✓ {label}  " + (f"· _{last_note}_" if last_note else ""))
-
-    finally:
-        os.unlink(tmp_path)
-
-    if final_state is None:
-        raise RuntimeError("Pipeline produced no output.")
-
+def _state_to_result(final_state: dict, skipped_nodes: set | None = None) -> dict:
+    """Build the UI result dict from a finished pipeline state — shared by
+    both the single-file streaming path and the concurrent batch path."""
     ext = final_state.get("extraction")
     val = final_state.get("validation")
     doc = ext.extracted_data if ext else None
@@ -105,15 +75,165 @@ def _run_pipeline(uploaded_file, placeholder) -> dict:
         "line_items":            doc.line_items        if doc else [],
         "extraction_notes":      doc.extraction_notes  if doc else "",
         "extraction_confidence": ext.confidence        if ext else 0.0,
+        "confidence_breakdown": {
+            "vlm_confidence":       ext.vlm_confidence,
+            "field_coverage_score": ext.field_coverage_score,
+        } if ext else None,
         "ocr_used":              ext.ocr_used          if ext else False,
         "validation_status":     final_state["final_status"].value
                                  if final_state.get("final_status") else "unknown",
         "corrections":           final_state.get("correction_attempts", 0),
         "validation_details":    validation_details,
         "document_id":           final_state.get("document_id", ""),
+        "source_path":           final_state.get("source_path", ""),
         "processing_notes":      final_state.get("processing_notes", []),
-        "skipped_nodes":         skipped_nodes,
+        "skipped_nodes":         skipped_nodes or set(),
     }
+
+
+def _run_pipeline(uploaded_file, placeholder) -> dict:
+    """Run the real LangGraph pipeline and update the stepper after EACH node completes."""
+    from graph.workflow import process_document_stream
+    from ui.components.pipeline_status import render_progress
+
+    doc_id, saved_path = _save_upload(uploaded_file)
+
+    completed_nodes: set = set()
+    final_state           = None
+    skipped_nodes:  set = set()
+
+    # Node display labels for the status caption
+    _labels = {
+        "ingest":       "📥 Ingesting document…",
+        "extract":      "🔍 Classifying and extracting fields with AI…",
+        "ocr_fallback": "📄 Running OCR fallback (low confidence detected)…",
+        "validate":     "✅ Validating extracted data…",
+        "correct":      "🔄 Auto-correcting failed fields…",
+        "store":        "💾 Saving to database…",
+        "review_queue": "👁️ Routing to human review queue…",
+    }
+
+    for node_name, state in process_document_stream(saved_path, document_id=doc_id):
+        # Mark this node as done
+        completed_nodes.add(node_name)
+        final_state = state
+
+        # Detect skipped OCR (if we jump straight from extract to validate)
+        if node_name == "validate" and "ocr_fallback" not in completed_nodes:
+            skipped_nodes.add("ocr_fallback")
+
+        # Render the stepper with REAL progress
+        with placeholder.container():
+            render_progress(completed_nodes, skipped_nodes=skipped_nodes)
+            label = _labels.get(node_name, f"Running {node_name}…")
+            notes = state.get("processing_notes") or []
+            last_note = notes[-1] if notes else ""
+            st.caption(f"✓ {label}  " + (f"· _{last_note}_" if last_note else ""))
+
+    if final_state is None:
+        raise RuntimeError("Pipeline produced no output.")
+
+    return _state_to_result(final_state, skipped_nodes)
+
+
+def _run_batch_concurrent(uploaded_files) -> None:
+    """Process multiple documents concurrently. VLM calls are I/O-bound
+    (network requests), so a thread pool gives a real wall-clock speedup for
+    batch uploads — safe here because worker threads only run the pipeline
+    (each opens its own SQLite connection), never touch Streamlit widgets."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from graph.workflow import process_document
+
+    jobs = [(f.name, *_save_upload(f)) for f in uploaded_files]
+
+    progress = st.progress(0.0, text=f"Processing 0 / {len(jobs)}…")
+    results: dict[str, dict] = {}
+    errors:  dict[str, str]  = {}
+
+    with ThreadPoolExecutor(max_workers=min(_BATCH_MAX_WORKERS, len(jobs))) as executor:
+        future_to_name = {
+            executor.submit(process_document, path, doc_id): name
+            for name, doc_id, path in jobs
+        }
+        done = 0
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            done += 1
+            try:
+                results[name] = _state_to_result(future.result())
+            except Exception as e:
+                errors[name] = str(e)
+            progress.progress(done / len(jobs), text=f"Processed {done} / {len(jobs)}…")
+
+    progress.empty()
+
+    for name, doc_id, _path in jobs:
+        st.subheader(f"Processing: {name}")
+        if name in errors:
+            _handle_processing_error(name, errors[name], fallback_document_id=doc_id, source_path=_path)
+            continue
+
+        result = results[name]
+        status = result["validation_status"]
+        if status in ("valid", "corrected"):
+            st.success(f"{name} processed successfully.")
+        elif status == "pending_review":
+            st.warning(f"{name} sent to Review Queue.")
+        else:
+            st.error(f"{name} processing failed.")
+        _show_results(result)
+
+
+def _handle_processing_error(filename: str, err: str, fallback_document_id: str, source_path: str) -> None:
+    """Shared error-handling for both the single-file and batch paths."""
+    if "429" in err or "RESOURCE_EXHAUSTED" in err:
+        st.error(f"{filename}: Gemini quota exceeded.")
+        return
+    if "poppler" in err.lower() or "page count" in err.lower():
+        st.error(f"{filename}: Poppler not found.")
+        return
+    if "tesseract" in err.lower():
+        st.error(f"{filename}: Tesseract not found.")
+        return
+
+    # Other pipeline errors — save what we have to the review queue rather
+    # than silently losing the document.
+    try:
+        from database.storage import save_record
+        from models.schemas import ProcessingRecord, ValidationStatus
+
+        save_record(ProcessingRecord(
+            document_id=fallback_document_id,
+            source_path=source_path,
+            doc_type="unknown",
+            raw_ocr_text="",
+            vlm_extraction={},
+            corrections_applied=[],
+            final_data={},
+            validation_status=ValidationStatus.PENDING,
+            extraction_confidence=0.0,
+            processing_notes=[
+                f"Pipeline failed: {err}",
+                "Automatically moved to Review Queue.",
+            ],
+        ))
+        st.warning(f"{filename} could not be processed and has been moved to Review Queue.")
+    except Exception as inner_e:
+        st.error(f"Error saving failed record for {filename}: {inner_e}")
+        st.error(f"{filename} processing failed with error: {err}")
+
+
+def _show_source_preview(source_path: str) -> None:
+    if not source_path:
+        return
+    try:
+        from pipeline.ingestion import get_preview_image
+        img = get_preview_image(source_path)
+    except Exception:
+        img = None
+    if img is not None:
+        with st.expander("🖼️ View source document", expanded=False):
+            st.image(img, use_container_width=True)
 
 
 def _show_results(result: dict) -> None:
@@ -133,6 +253,15 @@ def _show_results(result: dict) -> None:
         c2.metric("Confidence",      f"{conf*100:.0f}%")
         c3.metric("Fields Found",    len(result["fields"]))
         c4.metric("Status",          status.replace("_"," ").title())
+
+        breakdown = result.get("confidence_breakdown")
+        if breakdown and breakdown.get("vlm_confidence") is not None:
+            st.caption(
+                f"🧮 Confidence = {breakdown['vlm_confidence']*100:.0f}% VLM self-report × 0.7 "
+                f"+ {breakdown['field_coverage_score']*100:.0f}% field coverage × 0.3"
+            )
+
+    _show_source_preview(result.get("source_path", ""))
 
     if result.get("extraction_notes"):
         st.info(f"**AI summary:** {result['extraction_notes']}")
@@ -265,6 +394,11 @@ def render() -> None:
         for f in uploaded_files:
             st.write(f"• {f.name} ({f.size // 1024} KB)")
 
+        if len(uploaded_files) > 1:
+            st.caption(
+                f"⚡ Batch mode: up to {_BATCH_MAX_WORKERS} documents will process concurrently."
+            )
+
         run = st.button(
             "▶ Run Pipeline",
             type="primary",
@@ -272,10 +406,13 @@ def render() -> None:
         )
 
         if run:
-            placeholder = st.empty()
-
-            for f in uploaded_files:
+            if len(uploaded_files) > 1:
+                with st.spinner(f"Processing {len(uploaded_files)} documents…"):
+                    _run_batch_concurrent(uploaded_files)
+            else:
+                f = uploaded_files[0]
                 st.subheader(f"Processing: {f.name}")
+                placeholder = st.empty()
 
                 with st.spinner(f"Processing {f.name}..."):
                     try:
@@ -285,68 +422,19 @@ def render() -> None:
 
                         if status in ("valid", "corrected"):
                             st.success(f"{f.name} processed successfully.")
-
                         elif status == "pending_review":
                             st.warning(f"{f.name} sent to Review Queue.")
-
                         else:
                             st.error(f"{f.name} processing failed.")
 
-                        # For batch uploads show results inline here.
-                        # Single-file results are shown below (after the run block)
-                        # to avoid rendering the same widgets twice on the same page.
-                        if len(uploaded_files) > 1:
-                            _show_results(st.session_state.process_result)
-
                     except Exception as e:
-                        err = str(e)
+                        _handle_processing_error(
+                            f.name, str(e),
+                            fallback_document_id=str(uuid.uuid4()),
+                            source_path=f.name,
+                        )
 
-                        if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                            st.error(f"{f.name}: Gemini quota exceeded.")
-
-                        elif "poppler" in err.lower() or "page count" in err.lower():
-                            st.error(f"{f.name}: Poppler not found.")
-
-                        elif "tesseract" in err.lower():
-                            st.error(f"{f.name}: Tesseract not found.")
-
-                        else:
-                            # For other pipeline errors, save to review queue
-                            try:
-                                from database.storage import save_record
-                                from models.schemas import (
-                                    ProcessingRecord,
-                                    ValidationStatus,
-                                )
-
-                                document_id_for_record = str(uuid.uuid4())
-
-                                save_record(
-                                    ProcessingRecord(
-                                        document_id=document_id_for_record,
-                                        source_path=f.name,
-                                        doc_type="unknown",
-                                        raw_ocr_text="",
-                                        vlm_extraction={},
-                                        corrections_applied=[],
-                                        final_data={},
-                                        validation_status=ValidationStatus.PENDING,
-                                        extraction_confidence=0.0,
-                                        processing_notes=[
-                                            f"Pipeline failed: {str(e)}",
-                                            "Automatically moved to Review Queue.",
-                                        ],
-                                    )
-                                )
-                                st.warning(
-                                    f"{f.name} could not be processed and has been moved to Review Queue."
-                                )
-
-                            except Exception as inner_e:
-                                st.error(f"Error saving failed record for {f.name}: {inner_e}")
-                                st.error(f"{f.name} processing failed with error: {e}") # Show original error as well
-
-            placeholder.empty()
+                placeholder.empty()
 
     elif st.session_state.process_result is None:
         st.markdown("<br/>", unsafe_allow_html=True)
@@ -354,9 +442,8 @@ def render() -> None:
             pipeline_status.render()
             st.caption("Pipeline ready — upload any document to begin.")
 
-    # Show the last processed document (mainly for single-file uploads).
-    # During batch processing, each file's result is already displayed inside the loop.
-
+    # Show the last processed document (single-file uploads only — batch
+    # results are already rendered inline by _run_batch_concurrent above).
     if (
         st.session_state.process_result is not None
         and (not uploaded_files or len(uploaded_files) == 1)
@@ -367,12 +454,10 @@ def render() -> None:
 
         if status in ("valid", "corrected"):
             st.success("Document processed successfully.")
-
         elif status == "pending_review":
             st.warning(
                 "Document sent to Review Queue — confidence below auto-approve threshold."
             )
-
         else:
             st.error("Processing completed with errors.")
 

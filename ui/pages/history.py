@@ -169,10 +169,34 @@ def render() -> None:
     col_type.metric("Type",         (record.get("doc_type") or "invoice").title())
     col_date.metric("Processed",    (record.get("created_at") or "")[:10])
 
-    tab_fields, tab_items, tab_ocr, tab_latency, tab_audit, tab_export = st.tabs([
-        "📋 Extracted Fields", "🗒️ Line Items", "📄 Raw OCR",
+    conf_breakdown = final.get("confidence_breakdown")
+    if conf_breakdown and conf_breakdown.get("vlm_confidence") is not None:
+        st.caption(
+            f"🧮 Confidence = {conf_breakdown['vlm_confidence']*100:.0f}% VLM self-report × 0.7 "
+            f"+ {conf_breakdown['field_coverage_score']*100:.0f}% field coverage × 0.3"
+        )
+
+    tab_source, tab_fields, tab_items, tab_ocr, tab_latency, tab_audit, tab_export = st.tabs([
+        "🖼️ Source", "📋 Extracted Fields", "🗒️ Line Items", "📄 Raw OCR",
         "⏱ Latency", "🔍 Audit Trail", "⬇️ Export"
     ])
+
+    with tab_source:
+        source_path = record.get("source_path") or ""
+        preview_img = None
+        if source_path:
+            try:
+                from pipeline.ingestion import get_preview_image
+                preview_img = get_preview_image(source_path)
+            except Exception:
+                preview_img = None
+        if preview_img is not None:
+            st.image(preview_img, use_container_width=True)
+        else:
+            st.info(
+                "Original file not available for preview "
+                "(processed before image persistence was added, or file was moved)."
+            )
 
     with tab_fields:
         from ui.components.field_groups import format_value, group_fields, pretty_label
