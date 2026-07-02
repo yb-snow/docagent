@@ -276,12 +276,14 @@ def _extract_with_local_vlm(images: List[Image.Image], ocr_text: str) -> Extract
 # ── Parse helpers ─────────────────────────────────────────────────────────────
 
 def _build_result(ocr_text: str, raw: str) -> ExtractionResult:
-    doc_data, confidence = _parse_response(raw)
+    doc_data, confidence, vlm_conf, field_score = _parse_response(raw)
     return ExtractionResult(
         raw_ocr_text=ocr_text,
         extracted_data=doc_data,
         confidence=confidence,
         vlm_response=raw,
+        vlm_confidence=vlm_conf,
+        field_coverage_score=field_score,
     )
 
 
@@ -363,10 +365,10 @@ def _sanitise_json_strings(text: str) -> str:
     return "".join(result)
 
 
-def _parse_response(text: str) -> Tuple[DocumentData, float]:
+def _parse_response(text: str) -> Tuple[DocumentData, float, float, float]:
     if not text or not text.strip():
         print("[extraction_agent] VLM returned empty response")
-        return DocumentData(), 0.0
+        return DocumentData(), 0.0, 0.0, 0.0
 
     # Strip markdown code fences (opening and closing)
     text = re.sub(r"```(?:json)?", "", text).strip()
@@ -384,7 +386,7 @@ def _parse_response(text: str) -> Tuple[DocumentData, float]:
         raw_json = _close_truncated_json(text[open_pos:])
     else:
         print(f"[extraction_agent] No JSON found in VLM response.\nResponse: {text[:800]}")
-        return DocumentData(), 0.0
+        return DocumentData(), 0.0, 0.0, 0.0
 
     # ── Step 2: sanitise + parse ──────────────────────────────────────────────
     try:
@@ -395,7 +397,7 @@ def _parse_response(text: str) -> Tuple[DocumentData, float]:
     except Exception as e:
         print(f"[extraction_agent] JSON parse error: {e}")
         print(f"[extraction_agent] Attempted to parse: {raw_json[:500]}")
-        return DocumentData(), 0.0
+        return DocumentData(), 0.0, 0.0, 0.0
 
     # ── Step 3: build DocumentData ────────────────────────────────────────────
     try:
@@ -425,8 +427,8 @@ def _parse_response(text: str) -> Tuple[DocumentData, float]:
             fields=clean_fields,
             line_items=items if isinstance(items, list) else [],
             extraction_notes=notes,
-        ), confidence
+        ), confidence, round(raw_conf, 2), round(field_score, 2)
 
     except Exception as e:
         print(f"[extraction_agent] Field extraction error: {e}")
-        return DocumentData(), 0.0
+        return DocumentData(), 0.0, 0.0, 0.0

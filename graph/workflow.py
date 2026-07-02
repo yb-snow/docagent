@@ -132,7 +132,7 @@ def node_fx_convert(state: InvoiceState) -> InvoiceState:
 
 def node_validate(state: InvoiceState) -> InvoiceState:
     t0     = time.time()
-    result = validation_agent.run(state["extraction"])
+    result = validation_agent.run(state["extraction"], document_id=state["document_id"])
     state["validation"] = result
     elapsed = _timed(state, "validate", t0)
 
@@ -196,6 +196,11 @@ def _save(state: InvoiceState, status: ValidationStatus) -> None:
             "line_items":       ext.extracted_data.line_items,
             "extraction_notes": ext.extracted_data.extraction_notes,
             "timings":          state["timings"],
+            "confidence_breakdown": {
+                "vlm_confidence":       ext.vlm_confidence,
+                "field_coverage_score": ext.field_coverage_score,
+                "overall":              ext.confidence,
+            },
         } if ext else {},
         validation_status=status,
         extraction_confidence=ext.confidence if ext else 0.0,
@@ -242,6 +247,11 @@ def _route_after_validation(state: InvoiceState) -> str:
     conf = state["extraction"].confidence if state["extraction"] else 0.0
 
     if v and not v.is_valid:
+        # Some failures (duplicate submission, line-item math) can't be fixed
+        # by re-querying the VLM — skip straight to human review instead of
+        # burning correction attempts on something a retry can't solve.
+        if any(f in validation_agent.NON_CORRECTABLE_FIELDS for f in (v.failed_fields or [])):
+            return "review_queue"
         if state["correction_attempts"] < config.MAX_CORRECTION_ATTEMPTS:
             return "correct"
         return "review_queue"
@@ -280,9 +290,9 @@ def build_graph():
     return g.compile()
 
 
-def _initial_state(path: str) -> InvoiceState:
+def _initial_state(path: str, document_id: Optional[str] = None) -> InvoiceState:
     return {
-        "document_id":         str(uuid.uuid4()),
+        "document_id":         document_id or str(uuid.uuid4()),
         "source_path":         str(path),
         "images":              [],
         "ocr_texts":           [],
@@ -298,13 +308,13 @@ def _initial_state(path: str) -> InvoiceState:
     }
 
 
-def process_document(path: str) -> InvoiceState:
-    return build_graph().invoke(_initial_state(path))
+def process_document(path: str, document_id: Optional[str] = None) -> InvoiceState:
+    return build_graph().invoke(_initial_state(path, document_id))
 
 
-def process_document_stream(path: str):
+def process_document_stream(path: str, document_id: Optional[str] = None):
     """Yield (node_name, state) after each node completes."""
     graph = build_graph()
-    for chunk in graph.stream(_initial_state(path)):
+    for chunk in graph.stream(_initial_state(path, document_id)):
         node_name   = list(chunk.keys())[0]
         yield node_name, chunk[node_name]

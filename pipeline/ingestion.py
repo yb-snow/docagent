@@ -80,3 +80,24 @@ def _preprocess(img: Image.Image) -> Image.Image:
     img = deskew(img)
     img = enhance_contrast(img)
     return img
+
+
+def get_preview_image(source_path: Union[str, Path]) -> Union[Image.Image, None]:
+    """Return a lightweight, unprocessed preview of a stored source document
+    (first page only for PDFs) for display in the UI. Returns None if the
+    file is missing or unreadable — callers should show a fallback message."""
+    path = Path(source_path)
+    if not path.exists():
+        return None
+    try:
+        if path.suffix.lower() == ".pdf":
+            from pdf2image import convert_from_path
+            poppler_path = _find_poppler_path()
+            kwargs = {"dpi": 100, "first_page": 1, "last_page": 1}
+            if poppler_path:
+                kwargs["poppler_path"] = poppler_path
+            pages = convert_from_path(str(path), **kwargs)
+            return pages[0].convert("RGB") if pages else None
+        return Image.open(path).convert("RGB")
+    except Exception:
+        return None

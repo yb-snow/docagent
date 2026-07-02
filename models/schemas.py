@@ -137,6 +137,9 @@ class ExtractionResult(BaseModel):
     confidence:     float = Field(ge=0.0, le=1.0, default=0.0)
     vlm_response:   Optional[str] = None
     ocr_used:       bool = False
+    # Confidence breakdown — confidence = (vlm_confidence * 0.7) + (field_coverage_score * 0.3)
+    vlm_confidence:       Optional[float] = None
+    field_coverage_score: Optional[float] = None
 
 
 class ValidationResult(BaseModel):

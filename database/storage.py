@@ -138,6 +138,70 @@ def get_audit_trail(document_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# ── Duplicate detection ───────────────────────────────────────────────────────
+
+def find_duplicate(
+    vendor_name: Optional[str],
+    invoice_number: Optional[str],
+    total_amount: Optional[float],
+    invoice_date: Optional[str],
+    exclude_document_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Look for an already-stored record that looks like the same document.
+
+    Match strategy: same vendor + same invoice/document number (strong
+    match), or — if no number is available on either side — same vendor +
+    same total + same date. Rejected records are excluded so a corrected
+    resubmission of a previously-rejected document isn't flagged forever.
+    """
+    if not vendor_name:
+        return None
+    vendor_norm = vendor_name.strip().lower()
+
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT document_id, final_data FROM invoice_records "
+            "WHERE validation_status != 'rejected'"
+        ).fetchall()
+
+    for row in rows:
+        if exclude_document_id and row["document_id"] == exclude_document_id:
+            continue
+        try:
+            data   = json.loads(row["final_data"] or "{}")
+            fields = data.get("fields") or {}
+        except Exception:
+            continue
+
+        existing_vendor = str(
+            fields.get("vendor_name") or fields.get("vendor") or
+            fields.get("supplier_name") or fields.get("merchant") or ""
+        ).strip().lower()
+        if not existing_vendor or existing_vendor != vendor_norm:
+            continue
+
+        existing_number = (
+            fields.get("invoice_number") or fields.get("receipt_number") or
+            fields.get("document_number") or fields.get("reference_number")
+        )
+        if invoice_number and existing_number and \
+           str(existing_number).strip().lower() == str(invoice_number).strip().lower():
+            return {"document_id": row["document_id"], "reason": "same vendor + invoice number"}
+
+        if not invoice_number or not existing_number:
+            existing_total = fields.get("total_amount") or fields.get("total")
+            existing_date  = fields.get("invoice_date") or fields.get("date")
+            if total_amount is not None and existing_total is not None and invoice_date and existing_date:
+                try:
+                    if abs(float(existing_total) - float(total_amount)) < 0.01 \
+                       and str(existing_date) == str(invoice_date):
+                        return {"document_id": row["document_id"], "reason": "same vendor + amount + date"}
+                except (TypeError, ValueError):
+                    pass
+
+    return None
+
+
 # ── Review queue actions ──────────────────────────────────────────────────────
 
 def approve_record(document_id: str, updated_data: dict) -> None:
