@@ -112,7 +112,8 @@ def node_ocr_fallback(state: InvoiceState) -> InvoiceState:
 
 
 def node_fx_convert(state: InvoiceState) -> InvoiceState:
-    """Detect currency; if non-INR fetch live rate and convert all monetary fields to INR."""
+    """If enabled (config.FX_CONVERSION_ENABLED), detect currency and convert
+    all monetary fields to config.LOCAL_CURRENCY via a live FX rate."""
     t0  = time.time()
     ext = state["extraction"]
     if not ext:

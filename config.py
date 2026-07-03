@@ -59,6 +59,14 @@ AUTO_APPROVE_THRESHOLD   = float(os.getenv("AUTO_APPROVE_THRESHOLD", "0.85"))
 MAX_CORRECTION_ATTEMPTS = int(os.getenv("MAX_CORRECTION_ATTEMPTS", "2"))
 CROP_PADDING_PX         = int(os.getenv("CROP_PADDING_PX", "20"))
 
+# ── Currency conversion ────────────────────────────────────────────────────────
+# When enabled, documents in a foreign currency are converted to LOCAL_CURRENCY
+# via a live FX rate before validation; a failed rate fetch always forces human
+# review (see agents/fx_agent.py). When disabled, documents are stored in their
+# original currency and never trigger a review on currency grounds.
+LOCAL_CURRENCY        = os.getenv("LOCAL_CURRENCY", "INR")
+FX_CONVERSION_ENABLED = os.getenv("FX_CONVERSION_ENABLED", "true").strip().lower() == "true"
+
 
 # ── Runtime update helpers ────────────────────────────────────────────────────
 

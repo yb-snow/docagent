@@ -1,4 +1,5 @@
-"""FX Agent — detect non-INR currency, fetch live rate, convert monetary fields to INR."""
+"""FX Agent — optionally detect non-local currency, fetch a live rate, and
+convert monetary fields to the configured local currency."""
 
 from __future__ import annotations
 
@@ -7,16 +8,24 @@ import urllib.request
 import json
 from typing import Optional
 
+import config
 from models.schemas import ExtractionResult
 
-# Canonical currency codes that are already INR
-_INR_CODES = {"INR", "RS", "RS.", "₹", "RUPEE", "RUPEES", "IND"}
+# Symbols used when writing the converted currency back onto a document.
+_CURRENCY_SYMBOLS = {
+    "INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
+    "CNY": "¥", "AUD": "A$", "CAD": "C$", "SGD": "S$", "AED": "AED",
+}
 
 # Monetary field name patterns
 _MONEY_PATTERN = re.compile(
     r"(total|amount|subtotal|tax|vat|gst|igst|sgst|cgst|price|cost|fee|charge|discount|balance|due|payable|net)",
     re.I,
 )
+
+_SYMBOL_MAP = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "₹": "INR",
+               "RS": "INR", "INR": "INR", "USD": "USD", "EUR": "EUR",
+               "GBP": "GBP", "SGD": "SGD", "AED": "AED", "JPY": "JPY"}
 
 
 def _detect_currency(fields: dict) -> Optional[str]:
@@ -39,20 +48,16 @@ def _detect_currency(fields: dict) -> Optional[str]:
             if "£" in sv:
                 return "GBP"
         return None
-    # Map common symbols → ISO codes
-    symbol_map = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "₹": "INR",
-                  "RS": "INR", "INR": "INR", "USD": "USD", "EUR": "EUR",
-                  "GBP": "GBP", "SGD": "SGD", "AED": "AED", "JPY": "JPY"}
-    return symbol_map.get(norm, norm if len(norm) == 3 else None)
+    return _SYMBOL_MAP.get(norm, norm if len(norm) == 3 else None)
 
 
-def _is_inr(currency: Optional[str]) -> bool:
+def _is_local_currency(currency: Optional[str], local_currency: str) -> bool:
     if currency is None:
-        return True   # assume INR if unknown
-    return currency.upper().strip() in _INR_CODES
+        return True   # assume local currency if unknown
+    return currency.upper().strip() == local_currency.upper().strip()
 
 
-def _fetch_rate(from_currency: str, to_currency: str = "INR") -> Optional[float]:
+def _fetch_rate(from_currency: str, to_currency: str) -> Optional[float]:
     """Fetch live FX rate via Frankfurter API (no key required)."""
     try:
         url = f"https://api.frankfurter.app/latest?from={from_currency}&to={to_currency}"
@@ -72,8 +77,8 @@ def _clean_amount(value) -> Optional[float]:
         return None
 
 
-def _convert_fields(fields: dict, rate: float, from_currency: str) -> dict:
-    """Return a new fields dict with all monetary values converted to INR."""
+def _convert_fields(fields: dict, rate: float, from_currency: str, local_currency: str) -> dict:
+    """Return a new fields dict with all monetary values converted to local_currency."""
     converted = {}
     for key, val in fields.items():
         if _MONEY_PATTERN.search(key):
@@ -84,10 +89,9 @@ def _convert_fields(fields: dict, rate: float, from_currency: str) -> dict:
                 converted[key] = val
         else:
             converted[key] = val
-    # Update currency markers
-    converted["currency"]        = "INR"
-    converted["currency_symbol"] = "₹"
-    converted["fx_rate_applied"] = f"1 {from_currency} = {rate} INR"
+    converted["currency"]        = local_currency
+    converted["currency_symbol"] = _CURRENCY_SYMBOLS.get(local_currency, local_currency)
+    converted["fx_rate_applied"] = f"1 {from_currency} = {rate} {local_currency}"
     return converted
 
 
@@ -108,35 +112,43 @@ def _convert_line_items(items: list, rate: float) -> list:
 
 def run(extraction: ExtractionResult) -> tuple[ExtractionResult, bool, Optional[float], str]:
     """
-    Inspect the extraction for currency; convert to INR if needed.
+    Inspect the extraction for currency; convert to config.LOCAL_CURRENCY if
+    needed and config.FX_CONVERSION_ENABLED is on.
 
     Returns:
         (updated_extraction, was_converted, rate_used, human_readable_note)
     """
+    local_currency = config.LOCAL_CURRENCY
+
+    if not config.FX_CONVERSION_ENABLED:
+        return extraction, False, None, (
+            "Currency conversion disabled — using document's original currency."
+        )
+
     fields   = extraction.extracted_data.fields
     currency = _detect_currency(fields)
 
-    if _is_inr(currency):
-        # Already INR — normalise symbol and return unchanged
+    if _is_local_currency(currency, local_currency):
+        # Already local — normalise the currency label and return unchanged
         if currency is not None:
             fields = dict(fields)
-            fields["currency"] = "INR"
-            fields["currency_symbol"] = "₹"
+            fields["currency"] = local_currency
+            fields["currency_symbol"] = _CURRENCY_SYMBOLS.get(local_currency, local_currency)
             updated_data = extraction.extracted_data.model_copy(update={"fields": fields})
             updated_ext  = extraction.model_copy(update={"extracted_data": updated_data})
-            return updated_ext, False, None, "Currency is INR — no conversion needed"
-        return extraction, False, None, "Currency unknown — assumed INR"
+            return updated_ext, False, None, f"Currency is {local_currency} — no conversion needed"
+        return extraction, False, None, f"Currency unknown — assumed {local_currency}"
 
-    # Non-INR: fetch live rate
-    rate = _fetch_rate(currency)
+    # Non-local: fetch live rate
+    rate = _fetch_rate(currency, local_currency)
     if rate is None:
         # FX fetch failed — flag for human review but don't convert
-        note = (f"⚠️ Non-INR currency detected ({currency}) but FX rate fetch failed. "
+        note = (f"⚠️ Non-{local_currency} currency detected ({currency}) but FX rate fetch failed. "
                 f"Flagged for human review.")
         return extraction, False, None, note
 
     # Convert
-    new_fields = _convert_fields(fields, rate, currency)
+    new_fields = _convert_fields(fields, rate, currency, local_currency)
     new_items  = _convert_line_items(extraction.extracted_data.line_items or [], rate)
 
     updated_data = extraction.extracted_data.model_copy(
@@ -144,6 +156,6 @@ def run(extraction: ExtractionResult) -> tuple[ExtractionResult, bool, Optional[
     )
     updated_ext = extraction.model_copy(update={"extracted_data": updated_data})
 
-    note = (f"💱 Converted from {currency} to INR at rate {rate:.4f}. "
+    note = (f"💱 Converted from {currency} to {local_currency} at rate {rate:.4f}. "
             f"All monetary fields updated.")
     return updated_ext, True, rate, note

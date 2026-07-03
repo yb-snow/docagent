@@ -65,8 +65,8 @@ def render() -> None:
     email      = current_email()
     saved_keys = get_api_keys(email)
 
-    tab_vlm, tab_thresholds, tab_vendors, tab_about = st.tabs(
-        ["🤖 VLM Backend", "🎚️ Thresholds", "🏢 Vendors", "ℹ️ About"]
+    tab_vlm, tab_thresholds, tab_currency, tab_vendors, tab_about = st.tabs(
+        ["🤖 VLM Backend", "🎚️ Thresholds", "💱 Currency", "🏢 Vendors", "ℹ️ About"]
     )
 
     # ── VLM Backend tab ───────────────────────────────────────────────────────
@@ -399,6 +399,60 @@ def render() -> None:
                     f"✅ Saved — documents below **{review_pct}%** confidence will go to Review Queue."
                 )
 
+    # ── Currency tab ──────────────────────────────────────────────────────────
+    with tab_currency:
+        st.markdown("#### Currency Conversion")
+        st.markdown(
+            "Control whether documents in a foreign currency get automatically "
+            "converted to your local currency before being stored."
+        )
+
+        currency_options = ["INR", "USD", "EUR", "GBP", "JPY", "SGD", "AED", "AUD", "CAD", "CNY"]
+        current_local = config.LOCAL_CURRENCY
+        if current_local not in currency_options:
+            currency_options.insert(0, current_local)
+
+        local_currency = st.selectbox(
+            "Local Currency",
+            currency_options,
+            index=currency_options.index(current_local),
+            help="Documents already in this currency are never converted.",
+        )
+
+        fx_enabled = st.checkbox(
+            "Convert documents to local currency",
+            value=config.FX_CONVERSION_ENABLED,
+            help=(
+                "ON: non-local-currency documents are converted via a live FX rate "
+                "before validation. If the rate fetch fails, the document is always "
+                "sent to human review, regardless of extraction confidence.\n\n"
+                "OFF: documents are stored in their original currency, currency is "
+                "never checked, and auto-approval is based purely on extraction "
+                "confidence."
+            ),
+        )
+
+        if fx_enabled:
+            st.info(
+                f"✅ Non-{local_currency} documents will be converted to {local_currency} "
+                f"using a live exchange rate. A failed rate fetch always routes to "
+                f"human review, regardless of confidence."
+            )
+        else:
+            st.warning(
+                "⚠️ Currency conversion is OFF — documents will be stored in "
+                "whatever currency is printed on them, and currency will never "
+                "trigger a human review by itself."
+            )
+
+        if st.button("💾 Save Currency Settings", type="primary", key="save_currency"):
+            config.apply({
+                "LOCAL_CURRENCY":        local_currency,
+                "FX_CONVERSION_ENABLED": fx_enabled,
+            })
+            st.success(f"✅ Saved — local currency set to **{local_currency}**.")
+            st.rerun()
+
     # ── Vendors tab ───────────────────────────────────────────────────────────
     with tab_vendors:
         st.markdown("#### Known Vendor Registry (ChromaDB)")
@@ -429,6 +483,8 @@ def render() -> None:
             ("VLM Backend",   config.VLM_BACKEND.upper()),
             ("Gemini Model",  config.GEMINI_MODEL),
             ("Claude Model",  config.CLAUDE_MODEL),
+            ("Local Currency", config.LOCAL_CURRENCY),
+            ("FX Conversion",  "Enabled" if config.FX_CONVERSION_ENABLED else "Disabled"),
             ("OCR Engine",    "Tesseract 5"),
             ("Storage",       config.SQLITE_PATH),
             ("Vector DB",     config.CHROMA_PERSIST_DIR),
