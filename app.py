@@ -1,4 +1,22 @@
+import os
+
 import streamlit as st
+
+# Bridge Streamlit Cloud's secrets manager into environment variables so
+# config.py (which reads via os.getenv/python-dotenv) picks them up the same
+# way it reads a local .env file. No-ops safely when no secrets.toml exists
+# (local dev, where .env is used instead) — st.secrets returns empty rather
+# than raising when the file is missing.
+#
+# Note: GEMINI_API_KEY/ANTHROPIC_API_KEY are deliberately NOT bridged here —
+# each signed-in user brings their own key (Settings page, encrypted at
+# rest — see utils/user_keys.py), never a shared key from secrets/env.
+try:
+    for _key in ("FERNET_KEY",):
+        if _key in st.secrets and not os.environ.get(_key):
+            os.environ[_key] = st.secrets[_key]
+except Exception:
+    pass
 
 st.set_page_config(
     page_title="Doc Agent — Invoice Intelligence",
@@ -20,6 +38,12 @@ import ui.pages.settings as settings_page
 from ui.components.sidebar import render_sidebar
 
 inject_css()
+
+# Safe to call on every rerun — CREATE TABLE IF NOT EXISTS. Needed here (not
+# just inside build_graph()) so Settings can save a key before anyone has
+# ever processed a document.
+from database.storage import init_db
+init_db()
 
 if not check_auth():
     login_page.render()

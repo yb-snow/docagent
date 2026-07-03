@@ -10,7 +10,9 @@ import streamlit as st
 sys.path.insert(0, os.getcwd())
 
 import config
+from ui.auth import current_email
 from ui.styles import page_header
+from utils.user_keys import get_api_keys, save_api_key
 
 
 # ── Connection testers ────────────────────────────────────────────────────────
@@ -60,6 +62,9 @@ def _test_claude(api_key: str, model: str) -> tuple[bool, str]:
 def render() -> None:
     page_header("⚙️", "Settings", "Configure VLM backend, thresholds, and vendors")
 
+    email      = current_email()
+    saved_keys = get_api_keys(email)
+
     tab_vlm, tab_thresholds, tab_vendors, tab_about = st.tabs(
         ["🤖 VLM Backend", "🎚️ Thresholds", "🏢 Vendors", "ℹ️ About"]
     )
@@ -102,9 +107,13 @@ def render() -> None:
                 "**Free tier limits:** 30 requests/min · 1,500 requests/day  \n"
                 "**Hit a rate limit?** Wait 60 seconds and retry, or switch to Claude below."
             )
+            st.caption(
+                "🔒 Your key is stored encrypted and tied to your account — "
+                "no one else who signs into this app can see or use it."
+            )
 
             gemini_key = st.text_input(
-                "Gemini API Key", value=config.GEMINI_API_KEY,
+                "Gemini API Key", value=saved_keys.get("gemini", ""),
                 type="password", placeholder="AIza…",
             )
 
@@ -141,15 +150,15 @@ def render() -> None:
                              use_container_width=True, key="save_gemini"):
                     if not gemini_key:
                         st.warning("Enter an API key before saving.")
+                    elif not email:
+                        st.error("You must be signed in to save an API key.")
                     else:
-                        config.apply({
-                            "VLM_BACKEND":    "gemini",
-                            "GEMINI_API_KEY": gemini_key,
-                            "GEMINI_MODEL":   gemini_model,
-                        })
+                        save_api_key(email, "gemini", gemini_key)
+                        config.apply({"VLM_BACKEND": "gemini", "GEMINI_MODEL": gemini_model})
                         st.success(
                             f"✅ Backend switched to **Gemini** (`{gemini_model}`) "
-                            f"— active immediately, no restart needed."
+                            f"— active immediately, no restart needed. Your key is saved "
+                            f"encrypted to your account."
                         )
                         st.rerun()
 
@@ -160,9 +169,13 @@ def render() -> None:
                 "Get your key at [console.anthropic.com](https://console.anthropic.com).  \n"
                 "Claude Sonnet is the best model for document vision tasks."
             )
+            st.caption(
+                "🔒 Your key is stored encrypted and tied to your account — "
+                "no one else who signs into this app can see or use it."
+            )
 
             claude_key = st.text_input(
-                "Anthropic API Key", value=config.ANTHROPIC_API_KEY,
+                "Anthropic API Key", value=saved_keys.get("claude", ""),
                 type="password", placeholder="sk-ant-…",
             )
 
@@ -197,15 +210,15 @@ def render() -> None:
                              use_container_width=True, key="save_claude"):
                     if not claude_key:
                         st.warning("Enter an API key before saving.")
+                    elif not email:
+                        st.error("You must be signed in to save an API key.")
                     else:
-                        config.apply({
-                            "VLM_BACKEND":       "claude",
-                            "ANTHROPIC_API_KEY": claude_key,
-                            "CLAUDE_MODEL":      claude_model,
-                        })
+                        save_api_key(email, "claude", claude_key)
+                        config.apply({"VLM_BACKEND": "claude", "CLAUDE_MODEL": claude_model})
                         st.success(
                             f"✅ Backend switched to **Claude** (`{claude_model}`) "
-                            f"— active immediately, no restart needed."
+                            f"— active immediately, no restart needed. Your key is saved "
+                            f"encrypted to your account."
                         )
                         st.rerun()
 
@@ -410,6 +423,9 @@ def render() -> None:
     with tab_about:
         st.markdown("#### System Status")
         rows = [
+            ("Signed in as",  email or "—"),
+            ("Your Gemini Key",    "✅ Configured" if saved_keys.get("gemini") else "❌ Not set"),
+            ("Your Anthropic Key", "✅ Configured" if saved_keys.get("claude") else "❌ Not set"),
             ("VLM Backend",   config.VLM_BACKEND.upper()),
             ("Gemini Model",  config.GEMINI_MODEL),
             ("Claude Model",  config.CLAUDE_MODEL),

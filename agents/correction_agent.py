@@ -9,7 +9,6 @@ from typing import Optional, List
 from PIL import Image
 
 import config
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, GEMINI_API_KEY, GEMINI_MODEL
 from models.schemas import ExtractionResult, ValidationResult, ValidationStatus
 from pipeline.ocr import crop_region
 from utils.image_processing import image_to_base64
@@ -38,8 +37,10 @@ def run(
     images: List[Image.Image],
     extraction: ExtractionResult,
     validation: ValidationResult,
+    api_keys: Optional[dict] = None,
 ) -> ExtractionResult:
-    updated = extraction.extracted_data.model_copy(deep=True)
+    api_keys = api_keys or {}
+    updated  = extraction.extracted_data.model_copy(deep=True)
 
     for field in validation.failed_fields:
         fv      = next((v for v in validation.field_validations if v.field == field), None)
@@ -48,12 +49,12 @@ def run(
         keyword = _REGION_KEYWORDS.get(field, field.replace("_", " "))
 
         corrected = None
-        
+
         for image in images:
-            corrected = _correct_field(image, field, current, error, keyword)
+            corrected = _correct_field(image, field, current, error, keyword, api_keys)
             if corrected is not None:
                 break
-        
+
         if corrected is not None:
             updated.fields[field] = corrected
 
@@ -67,36 +68,38 @@ def run(
 
 
 def _correct_field(image: Image.Image, field: str, current: str,
-                   error: str, keyword: str) -> Optional[str]:
+                   error: str, keyword: str, api_keys: dict) -> Optional[str]:
     crop   = crop_region(image, keyword) or image
     prompt = _PROMPT.format(field=field, current_value=current, error_message=error)
 
     if config.VLM_BACKEND == "gemini":
-        return _correct_gemini(crop, prompt)
+        api_key = api_keys.get("gemini") or config.GEMINI_API_KEY
+        return _correct_gemini(crop, prompt, api_key) if api_key else None
     elif config.VLM_BACKEND == "claude":
-        return _correct_claude(crop, prompt)
+        api_key = api_keys.get("claude") or config.ANTHROPIC_API_KEY
+        return _correct_claude(crop, prompt, api_key) if api_key else None
     return None
 
 
-def _correct_gemini(crop: Image.Image, prompt: str) -> Optional[str]:
+def _correct_gemini(crop: Image.Image, prompt: str, api_key: str) -> Optional[str]:
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=api_key)
     r = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=config.GEMINI_MODEL,
         contents=[crop, prompt],
         config=types.GenerateContentConfig(max_output_tokens=256, temperature=0.1),
     )
     return _parse(r.text)
 
 
-def _correct_claude(crop: Image.Image, prompt: str) -> Optional[str]:
+def _correct_claude(crop: Image.Image, prompt: str, api_key: str) -> Optional[str]:
     import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=api_key)
     b64    = image_to_base64(crop, fmt="PNG")
     msg    = client.messages.create(
-        model=CLAUDE_MODEL, max_tokens=256,
+        model=config.CLAUDE_MODEL, max_tokens=256,
         messages=[{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
             {"type": "text",  "text": prompt},

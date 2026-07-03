@@ -32,6 +32,10 @@ class InvoiceState(TypedDict):
     pipeline_start:       float    # epoch time when pipeline started
     fx_converted:         bool     # True if amounts were converted to INR
     fx_review_required:   bool     # True if non-INR but FX fetch failed
+    api_keys:             dict     # {"gemini": "...", "claude": "..."} — the
+                                    # requesting user's own keys, threaded
+                                    # explicitly (never a shared global) so
+                                    # concurrent users' keys can't cross-leak
 
 
 # ── Timing helper ─────────────────────────────────────────────────────────────
@@ -62,7 +66,7 @@ def node_extract(state: InvoiceState) -> InvoiceState:
     """Combined classify + extract — one VLM call identifies type and reads all fields."""
     t0           = time.time()
     combined_ocr = "\n\n".join(state.get("ocr_texts") or [])
-    result       = extraction_agent.run(state["images"], combined_ocr)
+    result       = extraction_agent.run(state["images"], combined_ocr, api_keys=state.get("api_keys"))
     state["extraction"] = result
     elapsed = _timed(state, "extract", t0)
 
@@ -153,6 +157,7 @@ def node_correct(state: InvoiceState) -> InvoiceState:
         state["images"],
         state["extraction"],
         state["validation"],
+        api_keys=state.get("api_keys"),
     )
     state["extraction"] = updated
     elapsed = _timed(state, f"correct_{state['correction_attempts']}", t0)
@@ -290,7 +295,9 @@ def build_graph():
     return g.compile()
 
 
-def _initial_state(path: str, document_id: Optional[str] = None) -> InvoiceState:
+def _initial_state(
+    path: str, document_id: Optional[str] = None, api_keys: Optional[dict] = None,
+) -> InvoiceState:
     return {
         "document_id":         document_id or str(uuid.uuid4()),
         "source_path":         str(path),
@@ -305,16 +312,21 @@ def _initial_state(path: str, document_id: Optional[str] = None) -> InvoiceState
         "pipeline_start":      time.time(),
         "fx_converted":        False,
         "fx_review_required":  False,
+        "api_keys":            api_keys or {},
     }
 
 
-def process_document(path: str, document_id: Optional[str] = None) -> InvoiceState:
-    return build_graph().invoke(_initial_state(path, document_id))
+def process_document(
+    path: str, document_id: Optional[str] = None, api_keys: Optional[dict] = None,
+) -> InvoiceState:
+    return build_graph().invoke(_initial_state(path, document_id, api_keys))
 
 
-def process_document_stream(path: str, document_id: Optional[str] = None):
+def process_document_stream(
+    path: str, document_id: Optional[str] = None, api_keys: Optional[dict] = None,
+):
     """Yield (node_name, state) after each node completes."""
     graph = build_graph()
-    for chunk in graph.stream(_initial_state(path, document_id)):
+    for chunk in graph.stream(_initial_state(path, document_id, api_keys)):
         node_name   = list(chunk.keys())[0]
         yield node_name, chunk[node_name]

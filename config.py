@@ -14,14 +14,25 @@ BASE_DIR = Path(__file__).parent
 VLM_BACKEND = os.getenv("VLM_BACKEND", "gemini")
 
 # ── Google Gemini (Free Tier) ─────────────────────────────────────────────────
-# Get your free API key at: https://aistudio.google.com/app/apikey
-# No credit card required — just a Google account
+# GEMINI_API_KEY here is a CLI-only fallback (used by main.py, which has no
+# concept of a logged-in user). The Streamlit UI never reads this — each
+# signed-in user's own key is fetched per-request from encrypted per-user
+# storage (see utils/user_keys.py) and threaded explicitly through the
+# pipeline, precisely so one user's key can never leak into another user's
+# request under concurrent use.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ── Anthropic Claude (Optional) ───────────────────────────────────────────────
+# Same CLI-only-fallback caveat as GEMINI_API_KEY above.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+
+# ── Per-user API key encryption ───────────────────────────────────────────────
+# Symmetric key (Fernet) used to encrypt each user's saved API key at rest.
+# See utils/crypto.py. Generate with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+FERNET_KEY = os.getenv("FERNET_KEY", "")
 
 # ── Local VLM (Optional — needs GPU) ─────────────────────────────────────────
 LOCAL_VLM_MODEL  = os.getenv("LOCAL_VLM_MODEL", "InternVL2-8B")

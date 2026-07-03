@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Tuple, List
+from typing import Optional, Tuple, List
 
 from PIL import Image
 
 import config
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, GEMINI_API_KEY, GEMINI_MODEL
 from models.schemas import DocumentData, ExtractionResult
 
 # One prompt does BOTH classification and full extraction — saves an API call
@@ -60,12 +59,13 @@ OCR TEXT (use as reference if image is unclear):
 {ocr_text}"""
 
 
-def run(images: List[Image.Image], ocr_text: str) -> ExtractionResult:
-    backend = config.VLM_BACKEND          # read at call-time so Settings changes take effect
+def run(images: List[Image.Image], ocr_text: str, api_keys: Optional[dict] = None) -> ExtractionResult:
+    api_keys = api_keys or {}
+    backend  = config.VLM_BACKEND          # read at call-time so Settings changes take effect
     if backend == "gemini":
-        return _extract_with_gemini(images, ocr_text)
+        return _extract_with_gemini(images, ocr_text, api_keys.get("gemini") or config.GEMINI_API_KEY)
     elif backend == "claude":
-        return _extract_with_claude(images, ocr_text)
+        return _extract_with_claude(images, ocr_text, api_keys.get("claude") or config.ANTHROPIC_API_KEY)
     elif backend == "mlx":
         return _extract_with_mlx(images, ocr_text)
     elif backend == "moondream":
@@ -77,18 +77,24 @@ def run(images: List[Image.Image], ocr_text: str) -> ExtractionResult:
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
-def _extract_with_gemini(images: List[Image.Image], ocr_text: str) -> ExtractionResult:
+def _extract_with_gemini(images: List[Image.Image], ocr_text: str, api_key: str) -> ExtractionResult:
     from google import genai
     from google.genai import types
     import time
 
-    client   = genai.Client(api_key=GEMINI_API_KEY)
+    if not api_key:
+        raise ValueError(
+            "No Gemini API key configured. Add your own key in Settings "
+            "(or set GEMINI_API_KEY in .env for CLI use)."
+        )
+
+    client   = genai.Client(api_key=api_key)
     prompt   = _PROMPT.format(ocr_text=ocr_text[:4000])
 
     for attempt in range(3):
         try:
             response = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=config.GEMINI_MODEL,
                 contents=[*images, prompt],
                 config=types.GenerateContentConfig(
                     max_output_tokens=16384,
@@ -119,11 +125,17 @@ def _extract_with_gemini(images: List[Image.Image], ocr_text: str) -> Extraction
 
 # ── Claude ────────────────────────────────────────────────────────────────────
 
-def _extract_with_claude(images: List[Image.Image], ocr_text: str) -> ExtractionResult:
+def _extract_with_claude(images: List[Image.Image], ocr_text: str, api_key: str) -> ExtractionResult:
     import anthropic
     from utils.image_processing import image_to_base64
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    if not api_key:
+        raise ValueError(
+            "No Anthropic API key configured. Add your own key in Settings "
+            "(or set ANTHROPIC_API_KEY in .env for CLI use)."
+        )
+
+    client = anthropic.Anthropic(api_key=api_key)
     prompt = _PROMPT.format(ocr_text=ocr_text[:4000])
     encoded_images = [
         image_to_base64(img, fmt="PNG")
@@ -145,7 +157,7 @@ def _extract_with_claude(images: List[Image.Image], ocr_text: str) -> Extraction
     content.append({"type": "text", "text": prompt})
 
     msg = client.messages.create(
-        model = CLAUDE_MODEL,
+        model = config.CLAUDE_MODEL,
         max_tokens = 4096,
         messages = [
             {

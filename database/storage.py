@@ -57,6 +57,15 @@ def init_db() -> None:
             except Exception:
                 pass  # column already exists
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                email                   TEXT PRIMARY KEY,
+                encrypted_gemini_key    TEXT,
+                encrypted_anthropic_key TEXT,
+                updated_at              TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
 
 # ── Write ─────────────────────────────────────────────────────────────────────
 
@@ -136,6 +145,36 @@ def get_audit_trail(document_id: str) -> list[dict]:
             (document_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Per-user API key storage (encrypted at rest — see utils/crypto.py) ────────
+
+_KEY_COLUMNS = {"gemini": "encrypted_gemini_key", "claude": "encrypted_anthropic_key"}
+
+
+def save_user_api_key(email: str, provider: str, encrypted_key: str) -> None:
+    column = _KEY_COLUMNS.get(provider)
+    if not column:
+        raise ValueError(f"Unknown provider: {provider}")
+    with _get_conn() as conn:
+        conn.execute(
+            f"""INSERT INTO user_settings (email, {column}, updated_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT(email) DO UPDATE SET
+                    {column} = excluded.{column}, updated_at = excluded.updated_at""",
+            (email, encrypted_key),
+        )
+
+
+def get_user_api_key_encrypted(email: str, provider: str) -> Optional[str]:
+    column = _KEY_COLUMNS.get(provider)
+    if not column:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            f"SELECT {column} FROM user_settings WHERE email = ?", (email,)
+        ).fetchone()
+    return row[column] if row else None
 
 
 # ── Duplicate detection ───────────────────────────────────────────────────────

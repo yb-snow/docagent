@@ -37,6 +37,14 @@ _DOC_TYPE_ICONS = {
 }
 
 
+def _get_user_api_keys() -> dict:
+    """Decrypt and return the current user's saved API keys, keyed by provider."""
+    from ui.auth import current_email
+    from utils.user_keys import get_api_keys
+
+    return get_api_keys(current_email())
+
+
 def _save_upload(uploaded_file) -> tuple[str, str]:
     """Persist an uploaded file permanently under data/uploads/ and return
     (document_id, path). Documents used to be written to a tempfile and
@@ -113,7 +121,9 @@ def _run_pipeline(uploaded_file, placeholder) -> dict:
         "review_queue": "👁️ Routing to human review queue…",
     }
 
-    for node_name, state in process_document_stream(saved_path, document_id=doc_id):
+    for node_name, state in process_document_stream(
+        saved_path, document_id=doc_id, api_keys=_get_user_api_keys(),
+    ):
         # Mark this node as done
         completed_nodes.add(node_name)
         final_state = state
@@ -144,7 +154,8 @@ def _run_batch_concurrent(uploaded_files) -> None:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from graph.workflow import process_document
 
-    jobs = [(f.name, *_save_upload(f)) for f in uploaded_files]
+    jobs     = [(f.name, *_save_upload(f)) for f in uploaded_files]
+    api_keys = _get_user_api_keys()   # same signed-in user for the whole batch
 
     progress = st.progress(0.0, text=f"Processing 0 / {len(jobs)}…")
     results: dict[str, dict] = {}
@@ -152,7 +163,7 @@ def _run_batch_concurrent(uploaded_files) -> None:
 
     with ThreadPoolExecutor(max_workers=min(_BATCH_MAX_WORKERS, len(jobs))) as executor:
         future_to_name = {
-            executor.submit(process_document, path, doc_id): name
+            executor.submit(process_document, path, doc_id, api_keys): name
             for name, doc_id, path in jobs
         }
         done = 0
@@ -381,6 +392,13 @@ def render() -> None:
 
     if "process_result"  not in st.session_state:
         st.session_state.process_result  = None
+
+    import config
+    if config.VLM_BACKEND in ("gemini", "claude") and not _get_user_api_keys().get(config.VLM_BACKEND):
+        st.warning(
+            f"⚠️ No {config.VLM_BACKEND.title()} API key configured for your account yet. "
+            f"Add your own key in **Settings → VLM Backend** before processing documents."
+        )
 
     uploaded_files = st.file_uploader(
         "Drop files here or click to browse",

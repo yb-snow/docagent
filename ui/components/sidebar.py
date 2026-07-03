@@ -1,5 +1,5 @@
 import streamlit as st
-from ui.auth import logout
+from ui.auth import current_name, logout
 
 _NAV = [
     ("📊", "Dashboard",        ),
@@ -78,7 +78,7 @@ def render_sidebar() -> str:
         )
 
         # ── User info ──────────────────────────────────────────────────────────
-        username = st.session_state.get("username", "user")
+        username = current_name() or "user"
         st.markdown(
             f"""<div style="
                 color:{_TEXT_DIM};
