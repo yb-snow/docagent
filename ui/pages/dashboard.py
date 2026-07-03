@@ -12,8 +12,10 @@ import streamlit as st
 
 sys.path.insert(0, os.getcwd())
 
+import config
 from ui.styles import badge, page_header
 from ui.components.metrics import render_aggregate_row, render_kpi_row
+from ui.components.field_groups import currency_symbol
 
 
 def _load_stats() -> dict:
@@ -132,6 +134,7 @@ def render() -> None:
         avg_latency_s=stats.get("avg_latency_s"),
         avg_cost_per_invoice=stats.get("avg_cost_per_invoice"),
         total_cost=stats.get("total_cost"),
+        currency_symbol=currency_symbol(config.LOCAL_CURRENCY),
     )
 
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
@@ -193,7 +196,11 @@ def render() -> None:
                     fields.get("invoice_total") or fields.get("amount_payable")
                 )
                 try:
-                    total_str = f"₹{float(str(total_amt).replace(',','').replace('$','').replace('₹','').strip()):,.2f}"
+                    amt_val = float(
+                        str(total_amt).replace(",", "").replace("$", "")
+                        .replace("₹", "").replace("€", "").replace("£", "").strip()
+                    )
+                    total_str = f"{currency_symbol(fields.get('currency'))}{amt_val:,.2f}"
                 except Exception:
                     total_str = "—"
 

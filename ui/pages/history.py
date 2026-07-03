@@ -13,6 +13,7 @@ sys.path.insert(0, os.getcwd())
 
 from ui.styles import badge, page_header
 from ui.components.latency_panel import render as render_latency
+from ui.components.field_groups import currency_symbol, format_line_items
 
 
 def _load_records() -> list[dict]:
@@ -49,17 +50,24 @@ def _to_display_df(raw: list[dict]) -> pd.DataFrame:
             fields.get("invoice_total") or fields.get("amount_payable")
         )
         try:
-            total = float(str(total_raw).replace(",", "").replace("$", "")
-                          .replace("₹", "").replace("€", "").strip()) if total_raw else None
+            total_num = float(
+                str(total_raw).replace(",", "").replace("$", "")
+                .replace("₹", "").replace("€", "").replace("£", "").strip()
+            ) if total_raw else None
         except Exception:
-            total = None
+            total_num = None
+
+        # Formatted as a string (not NumberColumn) since each row can have a
+        # different currency now that conversion is optional — a single
+        # column-wide format string can't show the right symbol per row.
+        total_display = f"{currency_symbol(fields.get('currency'))}{total_num:,.2f}" if total_num is not None else "—"
 
         rows.append({
             "ID":         r["document_id"][:8],
             "File":       (r.get("source_path") or "").split("/")[-1] or "—",
             "Type":       raw_type.replace("_", " ").title(),
             "Vendor":     vendor,
-            "Total":      total,
+            "Total":      total_display,
             "Status":     r.get("validation_status", "unknown"),
             "Confidence": f"{(r.get('extraction_confidence') or 0)*100:.0f}%",
             "Date":       (r.get("created_at") or "")[:10],
@@ -124,7 +132,7 @@ def render() -> None:
         on_select="rerun",
         selection_mode="single-row",
         column_config={
-            "Total":  st.column_config.NumberColumn("Total", format="₹%.2f"),
+            "Total":  st.column_config.TextColumn("Total"),
             "Status": st.column_config.TextColumn("Status"),
         },
     )
@@ -237,7 +245,10 @@ def render() -> None:
     with tab_items:
         items = final.get("line_items") or vlm_raw.get("line_items") or []
         if items:
-            st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(format_line_items(items, currency)),
+                use_container_width=True, hide_index=True,
+            )
         else:
             st.info("No line items in this document.")
 

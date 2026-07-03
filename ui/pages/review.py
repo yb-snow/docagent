@@ -68,7 +68,7 @@ def render() -> None:
             f"🔍  {fname}  ·  {doc_type}  ·  Confidence {conf*100:.0f}%  ·  {reason}",
             expanded=False,
         ):
-            from ui.components.field_groups import group_fields, pretty_label
+            from ui.components.field_groups import format_line_items, group_fields, pretty_label
 
             # Fields live under final["fields"] in the DocumentData schema
             fields_dict = final.get("fields") or {}
@@ -133,7 +133,7 @@ def render() -> None:
                     import pandas as pd
                     st.markdown("**Line Items** *(read-only)*")
                     st.dataframe(
-                        pd.DataFrame(line_items),
+                        pd.DataFrame(format_line_items(line_items, fields_dict.get("currency") or "")),
                         use_container_width=True,
                         hide_index=True,
                     )

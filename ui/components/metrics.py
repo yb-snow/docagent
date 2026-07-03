@@ -38,10 +38,11 @@ def render_aggregate_row(
     avg_latency_s: float | None,
     avg_cost_per_invoice: float | None,
     total_cost: float | None,
+    currency_symbol: str = "₹",
 ) -> None:
     latency_val = f"{avg_latency_s:.1f}s" if avg_latency_s is not None else "—"
-    avg_cost_val = f"₹{avg_cost_per_invoice:,.2f}" if avg_cost_per_invoice is not None else "—"
-    total_cost_val = f"₹{total_cost:,.2f}" if total_cost is not None else "—"
+    avg_cost_val = f"{currency_symbol}{avg_cost_per_invoice:,.2f}" if avg_cost_per_invoice is not None else "—"
+    total_cost_val = f"{currency_symbol}{total_cost:,.2f}" if total_cost is not None else "—"
 
     cols = st.columns(3)
     cards = [

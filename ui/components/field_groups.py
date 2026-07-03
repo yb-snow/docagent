@@ -72,6 +72,15 @@ def pretty_label(key: str) -> str:
     return key.replace("_", " ").title()
 
 
+def currency_symbol(code: str) -> str:
+    """Return the display symbol for an ISO currency code, falling back to
+    the code itself (or ₹) when unmapped or empty."""
+    code = (code or "").upper().strip()
+    if not code:
+        return "₹"
+    return _CURRENCY_SYMBOLS.get(code, code + " ")
+
+
 def format_value(key: str, value, currency: str = "") -> str:
     """Format a value for display using the document's own currency symbol."""
     if value is None:
@@ -96,3 +105,12 @@ def format_value(key: str, value, currency: str = "") -> str:
             pass
 
     return str(value)
+
+
+def format_line_items(items: list[dict], currency: str = "") -> list[dict]:
+    """Return line items with monetary values formatted using the document's
+    own currency symbol, and keys converted to display labels."""
+    return [
+        {pretty_label(k): format_value(k, v, currency) for k, v in item.items()}
+        for item in items
+    ]

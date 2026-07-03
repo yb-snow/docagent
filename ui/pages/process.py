@@ -12,7 +12,7 @@ import streamlit as st
 
 from ui.styles import badge, page_header
 from ui.components import pipeline_status
-from ui.components.field_groups import format_value, group_fields, pretty_label
+from ui.components.field_groups import format_line_items, format_value, group_fields, pretty_label
 
 sys.path.insert(0, os.getcwd())
 
@@ -314,10 +314,7 @@ def _show_results(result: dict) -> None:
         items = result.get("line_items") or []
         if items:
             import pandas as pd
-            # Normalise: each item may have different keys
-            df = pd.DataFrame(items)
-            # Rename columns to Title Case
-            df.columns = [pretty_label(c) for c in df.columns]
+            df = pd.DataFrame(format_line_items(items, currency))
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.caption(f"{len(items)} line item(s) extracted")
         else:
