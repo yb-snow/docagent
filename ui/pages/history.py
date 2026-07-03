@@ -191,7 +191,9 @@ def render() -> None:
             except Exception:
                 preview_img = None
         if preview_img is not None:
+            st.markdown('<div class="doc-preview">', unsafe_allow_html=True)
             st.image(preview_img, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.info(
                 "Original file not available for preview "

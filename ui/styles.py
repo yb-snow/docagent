@@ -325,6 +325,13 @@ button[data-testid="baseButton-headerNoPadding"] {
     padding:20px 24px; box-shadow:0 2px 12px rgba(26,39,68,.08);
 }
 
+/* ── Source document preview ─────────────────────────────── */
+.doc-preview {
+    background:#ffffff; border-radius:12px; border:1px solid #e2e8f0;
+    padding:12px; box-shadow:0 2px 12px rgba(26,39,68,.08);
+}
+.doc-preview img {border-radius:8px; display:block;}
+
 /* ── Pipeline stepper ────────────────────────────────────── */
 .step-row  {display:flex;align-items:center;gap:0;margin:24px 0;}
 .step-item {display:flex;flex-direction:column;align-items:center;flex:1;}

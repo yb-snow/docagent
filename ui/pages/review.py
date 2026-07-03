@@ -89,7 +89,9 @@ def render() -> None:
 
                 if preview_img is not None:
                     st.markdown("**Source Document**")
+                    st.markdown('<div class="doc-preview">', unsafe_allow_html=True)
                     st.image(preview_img, use_container_width=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
                     st.markdown(
                         "<hr style='margin:6px 0;border-color:#e2e8f0'/>",
                         unsafe_allow_html=True,

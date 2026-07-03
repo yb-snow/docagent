@@ -8,3 +8,4 @@ data/
 database/*.db
 .venv/
 .claude/
+.streamlit/secrets.toml

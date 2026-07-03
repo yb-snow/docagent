@@ -233,7 +233,9 @@ def _show_source_preview(source_path: str) -> None:
         img = None
     if img is not None:
         with st.expander("🖼️ View source document", expanded=False):
+            st.markdown('<div class="doc-preview">', unsafe_allow_html=True)
             st.image(img, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _show_results(result: dict) -> None:
