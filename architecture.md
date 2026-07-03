@@ -2,7 +2,7 @@
 
 _Living document. Update this as the product evolves — treat it as the source of truth you'd walk an interviewer, a new engineer, or a stakeholder through._
 
-Last updated: 2026-07-03 (Tier 1-3 roadmap items shipped — see §13)
+Last updated: 2026-07-03 (Tier 1-3 roadmap items shipped, repo prepped for public deployment, real Google auth + per-user encrypted API keys added — see §13-14)
 
 ---
 
@@ -50,7 +50,7 @@ flowchart TB
     end
 
     subgraph UI["Streamlit UI Layer"]
-        Auth["Auth (demo/demo)"]
+        Auth["Auth (Google sign-in via st.login)"]
         Pages["Pages: Dashboard · Process · Review Queue · History · Settings"]
     end
 
@@ -342,7 +342,7 @@ If asked "why agentic / why not just one big prompt?" — the answer is **separa
 Worth having ready if asked "what's not done yet":
 
 - **`classification_agent.py` is unused dead code** in the current pipeline (see §5) — classification happens inside the extraction call instead.
-- **Auth is demo-only** (`ui/auth.py`: hardcoded `demo/demo`) — no real user management, no per-user data isolation.
+- **VLM backend choice and thresholds are still process-global, not per-session** — `config.apply()` (used by Settings to switch VLM backend/model/thresholds) mutates one shared module-level state for the whole running process. API *keys* are no longer part of this (see §13.1 — they're per-user and thread explicitly through the pipeline), but *which backend is active* and *what the auto-approve threshold is* are still shared across every concurrent visitor. Lower-severity than the key-leak risk this replaced, but still worth knowing: one visitor switching to Claude in Settings switches it for everyone, briefly, until they switch back.
 - **No background job queue** — batch uploads now process *concurrently* (see §13, ThreadPoolExecutor-based), which meaningfully cuts wall-clock time, but there's still no durable queue: a page refresh or process restart mid-batch loses in-flight work. A real queue (or at minimum a resumable job table) would be needed for production-scale batches.
 - **SQLite, not a production database** — fine for a pilot/demo; would need Postgres + connection pooling for multi-user concurrent access. The concurrent batch processing added in this round works safely with SQLite only because every DB call opens its own short-lived connection (no shared connection across threads) — that pattern would need revisiting under real concurrent load.
 - **No retry/backoff on the Claude or local-model paths** the way Gemini has (3 retries + 20s backoff) — an inconsistency worth fixing for reliability parity across backends.
@@ -353,7 +353,52 @@ Worth having ready if asked "what's not done yet":
 
 ---
 
-## 13. Roadmap / What's Next
+## 13. Deployment
+
+### Where this can run for free
+
+| Option | Fit | Notes |
+|---|---|---|
+| **Streamlit Community Cloud** (recommended) | Best fit | Built for exactly this — deploys straight from a GitHub repo, free public URL, native support for `packages.txt` (apt deps) and a secrets manager. |
+| **Hugging Face Spaces** (Streamlit SDK) | Close second | Similar free public hosting; slightly more manual system-package setup via a Dockerfile if you don't use their standard Streamlit runtime. |
+| **Render / Railway free tier** | More control, more setup | Full Docker control over the environment; free tiers are typically ephemeral-storage too, so no persistence advantage over Streamlit Cloud without a paid disk add-on. |
+
+Streamlit Community Cloud is the one this repo is now prepped for.
+
+### What had to change to make this deployable
+
+The repo was built and run locally on macOS, which hid three things that would otherwise break a Linux cloud deploy silently:
+
+1. **`requirements.txt` had macOS-only packages.** `mlx-vlm` (and its `mlx` dependency) only build on Apple Silicon. Fixed with a PEP 508 environment marker — `mlx-vlm; sys_platform == "darwin"` — so `pip` installs it locally but skips it entirely on Linux, instead of failing the whole build.
+2. **System binaries weren't declared anywhere.** `tesseract` and `poppler` were installed locally via Homebrew, which a cloud build knows nothing about. Added `packages.txt` (Streamlit Cloud's mechanism for apt-level dependencies) listing `tesseract-ocr` and `poppler-utils`.
+3. **There was no real login, and the API key had nowhere safe to live.** See §13.1 below — this became a full rework, not just a config tweak.
+
+### 13.1 Authentication & Per-User API Keys
+
+The original plan was "just bridge `GEMINI_API_KEY` into secrets." Two things made that insufficient once the app was going to be genuinely public:
+
+- **A shared key behind a hardcoded `demo`/`demo` login means anyone who finds the URL can burn your API quota.** Fixed by replacing the login entirely with **Streamlit's native Google OAuth** (`st.login("google")` / `st.user` / `st.logout()`, added in Streamlit 1.42) — no custom auth code, no third-party auth library beyond `Authlib` (which the native feature depends on).
+- **Once login is real, the right model is "everyone brings their own key," not "one shared key."** Each signed-in user now enters their own Gemini/Claude key in Settings. It's encrypted with `Fernet` (symmetric AES, via the `cryptography` package — already in the dependency tree, no new dependency) before being written to a new `user_settings` SQLite table keyed by email, and decrypted only in memory for the duration of a request. The plaintext key is never written to disk.
+
+**This surfaced a real latent bug worth naming.** The extraction/correction agents originally did `from config import GEMINI_API_KEY` — a one-time import-time snapshot, not a live reference. Single-user and rarely-changing-key, that bug was invisible. But it meant `config.apply()`'s "no restart needed" claim was already slightly false, and it would have been actively dangerous with per-user keys: two different users' requests reading the *same* stale global would risk one person's request silently using another person's key. Fixed by threading the API key explicitly through `InvoiceState` → `process_document()` → each agent call — the same pattern already used for `document_id` — so each request carries its own key with no shared mutable state to race on. I verified this by mocking the Gemini client and confirming two different simulated users' keys each reached their own `genai.Client(api_key=...)` call correctly.
+
+**One bug caught during testing, not just designed around:** `st.user.is_logged_in` raises `AttributeError` (not a graceful `False`) when `[auth]` isn't configured in secrets yet — which is exactly the state of a fresh deploy before Google OAuth credentials are set up. Without a fix, the entire app would have crashed on load, before ever reaching the login page. `check_auth()` now catches this and treats it as "not logged in." Caught via Streamlit's `AppTest` headless testing utility, not by inspection — a good reminder that a framework's newer APIs don't always fail the way you'd guess.
+
+**What's still global, not per-user:** VLM backend selection and confidence thresholds (see §12) — lower stakes than a leaked API key, but worth knowing.
+
+### The actual deploy steps (manual, one-time)
+
+1. Push this repo to GitHub (already done).
+2. **Google Cloud Console** → APIs & Services → Credentials → Create OAuth Client ID (type: Web application). Add authorized redirect URIs for both `http://localhost:8501/oauth2callback` (local) and `https://<your-app>.streamlit.app/oauth2callback` (deployed).
+3. Generate a Fernet key once: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` — save it somewhere safe, it's needed to decrypt any keys saved under it.
+4. On [share.streamlit.io](https://share.streamlit.io), connect the GitHub repo, branch `main`, entry point `app.py`.
+5. In the app's **Settings → Secrets**, paste the contents of `.streamlit/secrets.toml.example` filled in with your real Google OAuth client ID/secret and the Fernet key from step 3.
+6. Deploy. Streamlit Cloud reads `packages.txt` and `requirements.txt` automatically before starting the app.
+7. Sign in with Google, then add your own Gemini/Claude key in Settings.
+
+---
+
+## 14. Roadmap / What's Next
 
 _Keep this section updated as the product evolves._
 
@@ -370,10 +415,14 @@ A no-new-dependency, no-new-cost pass focused on closing the gap between "demo w
 - [x] **Confidence breakdown surfaced in the UI** — the 70/30 VLM-confidence/field-coverage split is now shown in Process Document, Review Queue, and History, not just the blended percentage.
 - [x] **Concurrent batch processing** — multi-file uploads now process with a `ThreadPoolExecutor` (capped at 3 workers to stay safely under Gemini's free-tier 30 req/min) instead of sequentially blocking on each VLM call.
 - [x] **Real Pipeline Health checks on the Dashboard** — replaced a hardcoded "everything is ✅" block with live checks (poppler present, VLM backend has a key configured, Tesseract available, SQLite reachable).
+- [x] **UI polish for source-image previews** — a `.doc-preview` card style matching the rest of the app's design language.
+- [x] **Deployment prep for Streamlit Community Cloud** — platform-marker fix for macOS-only deps, `packages.txt` for system binaries, secrets-based config bridging.
+- [x] **Real Google authentication** (`st.login("google")`) replacing hardcoded `demo`/`demo` — see §13.1.
+- [x] **Per-user encrypted API keys** — each signed-in user brings their own Gemini/Claude key, encrypted at rest (Fernet), never a shared secret — see §13.1. Fixed a latent stale-API-key-import bug as part of this.
 
 ### Next up
 
-- [ ] Real authentication (replace hardcoded demo/demo).
+- [ ] Session-scope VLM backend/threshold selection (currently still process-global — see §12).
 - [ ] Durable/resumable job tracking for batch processing (survive a page refresh or restart mid-batch).
 - [ ] Postgres migration path for multi-user production use.
 - [ ] Consistent retry/backoff across all VLM backends.
